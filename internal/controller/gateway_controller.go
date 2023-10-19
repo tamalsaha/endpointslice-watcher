@@ -56,7 +56,7 @@ func (r *EndpointSliceReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		// on deleted requests.
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	log.Info("found")
+	log.Info("found ***")
 
 	return ctrl.Result{}, nil
 }
