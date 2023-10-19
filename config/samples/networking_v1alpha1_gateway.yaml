@@ -1,0 +1,12 @@
+apiVersion: networking.envoy.com/v1alpha1
+kind: Gateway
+metadata:
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/instance: gateway-sample
+    app.kubernetes.io/part-of: endpointslice-watcher
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/created-by: endpointslice-watcher
+  name: gateway-sample
+spec:
+  # TODO(user): Add fields here
