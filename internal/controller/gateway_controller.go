@@ -19,44 +19,51 @@ package controller
 import (
 	"context"
 
+	discovery "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-
-	networkingv1alpha1 "github.com/tamalsaha/endpointslice-watcher/api/v1alpha1"
 )
 
-// GatewayReconciler reconciles a Gateway object
-type GatewayReconciler struct {
+// EndpointSliceReconciler reconciles a EndpointSlice object
+type EndpointSliceReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
 
-//+kubebuilder:rbac:groups=networking.envoy.com,resources=gateways,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=networking.envoy.com,resources=gateways/status,verbs=get;update;patch
-//+kubebuilder:rbac:groups=networking.envoy.com,resources=gateways/finalizers,verbs=update
+//+kubebuilder:rbac:groups=networking.envoy.com,resources=EndpointSlices,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=networking.envoy.com,resources=EndpointSlices/status,verbs=get;update;patch
+//+kubebuilder:rbac:groups=networking.envoy.com,resources=EndpointSlices/finalizers,verbs=update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
 // TODO(user): Modify the Reconcile function to compare the state specified by
-// the Gateway object against the actual cluster state, and then
+// the EndpointSlice object against the actual cluster state, and then
 // perform operations to make the cluster state reflect the state specified by
 // the user.
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.16.0/pkg/reconcile
-func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = log.FromContext(ctx)
+func (r *EndpointSliceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := log.FromContext(ctx)
 
-	// TODO(user): your logic here
+	var obj discovery.EndpointSlice
+	if err := r.Get(ctx, req.NamespacedName, &obj); err != nil {
+		log.Error(err, "unable to fetch EndpointSlice")
+		// we'll ignore not-found errors, since they can't be fixed by an immediate
+		// requeue (we'll need to wait for a new notification), and we can get them
+		// on deleted requests.
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+	log.Info("found")
 
 	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
-func (r *GatewayReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *EndpointSliceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&networkingv1alpha1.Gateway{}).
+		For(&discovery.EndpointSlice{}).
 		Complete(r)
 }
