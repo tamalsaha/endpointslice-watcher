@@ -19,5 +19,6 @@ limitations under the License.
 // +k8s:openapi-gen=true
 // +k8s:prerelease-lifecycle-gen=true
 // +groupName=discovery.k8s.io
+// +k8s:conversion-gen=k8s.io/api/discovery/v1
 
 package v1beta1 // import "k8s.io/api/discovery/v1beta1"
