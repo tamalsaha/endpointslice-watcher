@@ -161,23 +161,3 @@ $(CONTROLLER_GEN): $(LOCALBIN)
 envtest: $(ENVTEST) ## Download envtest-setup locally if necessary.
 $(ENVTEST): $(LOCALBIN)
 	test -s $(LOCALBIN)/setup-envtest || GOBIN=$(LOCALBIN) go install sigs.k8s.io/controller-runtime/tools/setup-envtest@latest
-
-GO_PKG := github.com/tamalsaha
-REPO   := $(notdir $(shell pwd))
-CODE_GENERATOR_IMAGE ?= ghcr.io/appscode/gengo:release-1.25
-DOCKER_REPO_ROOT     := /go/src/$(GO_PKG)/$(REPO)
-
-.PHONY: gen-conversion
-gen-conversion:
-	rm -rf ./internal/discovery/zz_generated.conversion.go
-	@docker run --rm                                   \
-		-u $$(id -u):$$(id -g)                           \
-		-v /tmp:/.cache                                  \
-		-v $$(pwd):$(DOCKER_REPO_ROOT)                   \
-		-w $(DOCKER_REPO_ROOT)                           \
-		--env HTTP_PROXY=$(HTTP_PROXY)                   \
-		--env HTTPS_PROXY=$(HTTPS_PROXY)                 \
-		$(CODE_GENERATOR_IMAGE)                          \
-		/go/bin/conversion-gen --go-header-file ./hack/boilerplate.go.txt \
-			--input-dirs ./vendor/k8s.io/api/discovery/v1beta1/generated.pb.go \
-			-O zz_generated.conversion

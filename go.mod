@@ -12,7 +12,7 @@ require (
 	sigs.k8s.io/controller-runtime v0.16.0
 )
 
-replace k8s.io/api => github.com/kmodules/api v0.28.1-0.20231019231137-6a643e6f0859
+replace k8s.io/api => github.com/kmodules/api v0.28.1-0.20231019235256-f5a285de366e
 
 require (
 	github.com/beorn7/perks v1.0.1 // indirect
