@@ -2,6 +2,7 @@ package lib
 
 import (
 	"context"
+	"fmt"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	discoveryv1beta1 "k8s.io/api/discovery/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -353,46 +354,91 @@ func (d *typedClient) GVR(gvr schema.GroupVersionResource) (bool, error) {
 	return d.GVK(gvk)
 }
 
-func NewClient(config *restclient.Config, options client.Options) (client.Client, error) {
-	tm := map[schema.GroupVersionKind]schema.GroupVersionKind{
-		discoveryv1.SchemeGroupVersion.WithKind("EndpointSlice"): discoveryv1beta1.SchemeGroupVersion.WithKind("EndpointSlice"),
-	}
-	c, err := client.New(config, options)
-	if err != nil {
-		return nil, err
-	}
-	cachable, err := apiutil2.NewDynamicCachable(config)
-	if err != nil {
-		return nil, err
-	}
-	tc := &typedClient{
-		c:        c,
-		cachable: cachable,
-		readerWrapper: &readerWrapper{
-			c:       c,
-			scheme:  c.Scheme(),
-			typeMap: tm,
-		},
-		typeMap: tm,
+func BuildTypeMap(kc client.Client, gvks ...schema.GroupVersionKind) (map[schema.GroupVersionKind]schema.GroupVersionKind, error) {
+	tm := map[schema.GroupVersionKind]schema.GroupVersionKind{}
+
+	for _, gvk := range gvks {
+		mappings, err := kc.RESTMapper().RESTMappings(gvk.GroupKind())
+		if err != nil {
+			return nil, err
+		}
+
+		var found bool
+		for _, mapping := range mappings {
+			if mapping.GroupVersionKind == gvk {
+				found = true
+				break
+			}
+		}
+		if !found {
+			for _, mapping := range mappings {
+
+				in, err := kc.Scheme().New(gvk)
+				if err != nil {
+					return nil, err
+				}
+				out, err := kc.Scheme().New(mapping.GroupVersionKind)
+				if err != nil {
+					return nil, err
+				}
+				if err := kc.Scheme().Convert(in, out, nil); err == nil {
+					tm[gvk] = mapping.GroupVersionKind
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("type mapping not found for %+v", gvk)
+		}
 	}
 
-	co := cu.NewDelegatingClientInput{
-		// CacheReader:       options.Cache.Reader,
-		Client: tc,
-		// UncachedObjects:   options.Cache.DisableFor,
-		// CacheUnstructured: options.Cache.Unstructured, // cache unstructured objects
-		Cachable: tc,
-	}
-	if options.Cache != nil {
-		co.CacheReader = &readerWrapper{
-			c:       options.Cache.Reader,
-			scheme:  c.Scheme(),
+	return tm, nil
+}
+
+func NewClient(gvks ...schema.GroupVersionKind) client.NewClientFunc {
+	return func(config *restclient.Config, options client.Options) (client.Client, error) {
+		c, err := client.New(config, options)
+		if err != nil {
+			return nil, err
+		}
+		cachable, err := apiutil2.NewDynamicCachable(config)
+		if err != nil {
+			return nil, err
+		}
+		tm, err := BuildTypeMap(c, gvks...)
+		if err != nil {
+			return nil, err
+		}
+		tc := &typedClient{
+			c:        c,
+			cachable: cachable,
+			readerWrapper: &readerWrapper{
+				c:       c,
+				scheme:  c.Scheme(),
+				typeMap: tm,
+			},
 			typeMap: tm,
 		}
-		co.UncachedObjects = options.Cache.DisableFor
-		co.CacheUnstructured = options.Cache.Unstructured // cache unstructured objects
+
+		co := cu.NewDelegatingClientInput{
+			// CacheReader:       options.Cache.Reader,
+			Client: tc,
+			// UncachedObjects:   options.Cache.DisableFor,
+			// CacheUnstructured: options.Cache.Unstructured, // cache unstructured objects
+			Cachable: tc,
+		}
+		if options.Cache != nil {
+			co.CacheReader = &readerWrapper{
+				c:       options.Cache.Reader,
+				scheme:  c.Scheme(),
+				typeMap: tm,
+			}
+			co.UncachedObjects = options.Cache.DisableFor
+			co.CacheUnstructured = options.Cache.Unstructured // cache unstructured objects
+		}
+		return cu.NewDelegatingClient(co)
 	}
-	return cu.NewDelegatingClient(co)
 }
 
 func NewOldClient(cache cache.Cache, config *restclient.Config, options client.Options, uncachedObjects ...client.Object) (client.Client, error) {

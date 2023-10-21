@@ -84,6 +84,26 @@ func useKubebuilderClient() error {
 		return err
 	}
 
+	tm, err := BuildTypeMap(kc, schema.GroupVersionKind{
+		Group:   discoveryv1.GroupName,
+		Version: "v1",
+		Kind:    "EndpointSlice",
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Println(tm)
+
+	k2, err := kc.RESTMapper().KindFor(schema.GroupVersionResource{
+		Group:    discoveryv1.GroupName,
+		Version:  "",
+		Resource: "endpointslices",
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Println(k2)
+
 	mappings, err := kc.RESTMapper().RESTMappings(schema.GroupKind{
 		Group: discoveryv1.GroupName,
 		Kind:  "EndpointSlice",
@@ -121,4 +141,46 @@ func useKubebuilderClient() error {
 	}
 
 	return nil
+}
+
+func BuildTypeMap(kc client.Client, gvks ...schema.GroupVersionKind) (map[schema.GroupVersionKind]schema.GroupVersionKind, error) {
+	tm := map[schema.GroupVersionKind]schema.GroupVersionKind{}
+
+	for _, gvk := range gvks {
+		mappings, err := kc.RESTMapper().RESTMappings(gvk.GroupKind())
+		if err != nil {
+			return nil, err
+		}
+
+		var found bool
+		for _, mapping := range mappings {
+			if mapping.GroupVersionKind == gvk {
+				found = true
+				break
+			}
+		}
+		if !found {
+			for _, mapping := range mappings {
+
+				in, err := kc.Scheme().New(gvk)
+				if err != nil {
+					return nil, err
+				}
+				out, err := kc.Scheme().New(mapping.GroupVersionKind)
+				if err != nil {
+					return nil, err
+				}
+				if err := kc.Scheme().Convert(in, out, nil); err == nil {
+					tm[gvk] = mapping.GroupVersionKind
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("type mapping not found for %+v", gvk)
+		}
+	}
+
+	return tm, nil
 }

@@ -19,6 +19,7 @@ package main
 import (
 	"flag"
 	"github.com/tamalsaha/endpointslice-watcher/lib"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -84,7 +85,9 @@ func main() {
 		// if you are doing or is intended to do any operation such as perform cleanups
 		// after the manager stops then its usage might be unsafe.
 		// LeaderElectionReleaseOnCancel: true,
-		NewClient: lib.NewClient,
+		NewClient: lib.NewClient(
+			discoveryv1.SchemeGroupVersion.WithKind("EndpointSlice"),
+		),
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
