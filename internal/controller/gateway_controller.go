@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	discoveryv1beta1 "k8s.io/api/discovery/v1beta1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	discovery "k8s.io/api/discovery/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -63,7 +65,17 @@ func (r *EndpointSliceReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *EndpointSliceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	_, err := mgr.GetClient().RESTMapper().RESTMapping(schema.GroupKind{
+		Group: discovery.GroupName,
+		Kind:  "EndpointSlice",
+	}, "v1")
+	if err == nil {
+		return ctrl.NewControllerManagedBy(mgr).
+			For(&discovery.EndpointSlice{}).
+			Complete(r)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&discovery.EndpointSlice{}).
+		For(&discoveryv1beta1.EndpointSlice{}).
 		Complete(r)
 }

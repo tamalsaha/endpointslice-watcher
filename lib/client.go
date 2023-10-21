@@ -1,43 +1,37 @@
-/*
-Copyright AppsCode Inc. and Contributors
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
-package duck
+package lib
 
 import (
 	"context"
-	"fmt"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	discoveryv1beta1 "k8s.io/api/discovery/v1beta1"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"strings"
+
+	cu "kmodules.xyz/client-go/client"
+	apiutil2 "kmodules.xyz/client-go/client/apiutil"
 
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	restclient "k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 )
 
+const listType = "List"
+
 type typedClient struct {
-	c       client.Client
-	duckGVK schema.GroupVersionKind
-	rawGVK  schema.GroupVersionKind
+	c        client.Client
+	cachable apiutil2.Cachable
+	*readerWrapper
+	typeMap map[schema.GroupVersionKind]schema.GroupVersionKind
 }
 
 var (
 	_ client.Reader       = &typedClient{}
 	_ client.Writer       = &typedClient{}
 	_ client.StatusClient = &typedClient{}
+	_ apiutil2.Cachable   = &typedClient{}
 )
 
 // GroupVersionKindFor returns the GroupVersionKind for the given object.
@@ -60,16 +54,26 @@ func (d *typedClient) RESTMapper() apimeta.RESTMapper {
 	return d.c.RESTMapper()
 }
 
-func (d *typedClient) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-	gvk, err := apiutil.GVKForObject(obj, d.c.Scheme())
+type readerWrapper struct {
+	c       client.Reader
+	scheme  *runtime.Scheme
+	typeMap map[schema.GroupVersionKind]schema.GroupVersionKind
+}
+
+var _ client.Reader = &readerWrapper{}
+
+func (d *readerWrapper) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	gvk, err := apiutil.GVKForObject(obj, d.scheme)
 	if err != nil {
 		return err
 	}
-	if gvk != d.duckGVK {
+
+	rawGVK, found := d.typeMap[gvk]
+	if !found {
 		return d.c.Get(ctx, key, obj, opts...)
 	}
 
-	ll, err := d.c.Scheme().New(d.rawGVK)
+	ll, err := d.scheme.New(rawGVK)
 	if err != nil {
 		return err
 	}
@@ -79,12 +83,11 @@ func (d *typedClient) Get(ctx context.Context, key client.ObjectKey, obj client.
 		return err
 	}
 
-	dd := obj.(Object)
-	return dd.Duckify(llo)
+	return d.scheme.Convert(llo, obj, nil)
 }
 
-func (d *typedClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
-	gvk, err := apiutil.GVKForObject(list, d.c.Scheme())
+func (d *readerWrapper) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	gvk, err := apiutil.GVKForObject(list, d.scheme)
 	if err != nil {
 		return err
 	}
@@ -92,14 +95,15 @@ func (d *typedClient) List(ctx context.Context, list client.ObjectList, opts ...
 		gvk.Kind = gvk.Kind[:len(gvk.Kind)-4]
 	}
 
-	if gvk != d.duckGVK {
+	rawGVK, found := d.typeMap[gvk]
+	if !found {
 		return d.c.List(ctx, list, opts...)
 	}
 
-	listGVK := d.rawGVK
+	listGVK := rawGVK
 	listGVK.Kind += listType
 
-	ll, err := d.c.Scheme().New(listGVK)
+	ll, err := d.scheme.New(listGVK)
 	if err != nil {
 		return err
 	}
@@ -116,12 +120,11 @@ func (d *typedClient) List(ctx context.Context, list client.ObjectList, opts ...
 
 	items := make([]runtime.Object, 0, apimeta.LenList(llo))
 	err = apimeta.EachListItem(llo, func(object runtime.Object) error {
-		d2, err := d.c.Scheme().New(d.duckGVK)
+		d2, err := d.scheme.New(gvk)
 		if err != nil {
 			return err
 		}
-		dd := d2.(Object)
-		err = dd.Duckify(object)
+		err = d.scheme.Convert(object, d2, nil)
 		if err != nil {
 			return err
 		}
@@ -139,10 +142,22 @@ func (d *typedClient) Create(ctx context.Context, obj client.Object, opts ...cli
 	if err != nil {
 		return err
 	}
-	if gvk != d.duckGVK {
+
+	rawGVK, found := d.typeMap[gvk]
+	if !found {
 		return d.c.Create(ctx, obj, opts...)
 	}
-	return fmt.Errorf("create not supported for duck type %+v", d.duckGVK)
+
+	ll, err := d.c.Scheme().New(rawGVK)
+	if err != nil {
+		return err
+	}
+	llo := ll.(client.Object)
+	err = d.Scheme().Convert(obj, llo, nil)
+	if err != nil {
+		return err
+	}
+	return d.c.Create(ctx, llo, opts...)
 }
 
 func (d *typedClient) Delete(ctx context.Context, obj client.Object, opts ...client.DeleteOption) error {
@@ -150,11 +165,13 @@ func (d *typedClient) Delete(ctx context.Context, obj client.Object, opts ...cli
 	if err != nil {
 		return err
 	}
-	if gvk != d.duckGVK {
+
+	rawGVK, found := d.typeMap[gvk]
+	if !found {
 		return d.c.Delete(ctx, obj, opts...)
 	}
 
-	ll, err := d.c.Scheme().New(d.rawGVK)
+	ll, err := d.c.Scheme().New(rawGVK)
 	if err != nil {
 		return err
 	}
@@ -170,10 +187,22 @@ func (d *typedClient) Update(ctx context.Context, obj client.Object, opts ...cli
 	if err != nil {
 		return err
 	}
-	if gvk != d.duckGVK {
+
+	rawGVK, found := d.typeMap[gvk]
+	if !found {
 		return d.c.Update(ctx, obj, opts...)
 	}
-	return fmt.Errorf("update not supported for duck type %+v", d.duckGVK)
+
+	ll, err := d.c.Scheme().New(rawGVK)
+	if err != nil {
+		return err
+	}
+	llo := ll.(client.Object)
+	err = d.Scheme().Convert(obj, llo, nil)
+	if err != nil {
+		return err
+	}
+	return d.c.Update(ctx, llo, opts...)
 }
 
 func (d *typedClient) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
@@ -181,11 +210,13 @@ func (d *typedClient) Patch(ctx context.Context, obj client.Object, patch client
 	if err != nil {
 		return err
 	}
-	if gvk != d.duckGVK {
+
+	rawGVK, found := d.typeMap[gvk]
+	if !found {
 		return d.c.Patch(ctx, obj, patch, opts...)
 	}
 
-	ll, err := d.c.Scheme().New(d.rawGVK)
+	ll, err := d.c.Scheme().New(rawGVK)
 	if err != nil {
 		return err
 	}
@@ -201,11 +232,13 @@ func (d *typedClient) DeleteAllOf(ctx context.Context, obj client.Object, opts .
 	if err != nil {
 		return err
 	}
-	if gvk != d.duckGVK {
+
+	rawGVK, found := d.typeMap[gvk]
+	if !found {
 		return d.c.DeleteAllOf(ctx, obj, opts...)
 	}
 
-	ll, err := d.c.Scheme().New(d.rawGVK)
+	ll, err := d.c.Scheme().New(rawGVK)
 	if err != nil {
 		return err
 	}
@@ -233,10 +266,22 @@ func (sw *typedStatusWriter) Create(ctx context.Context, obj client.Object, subR
 	if err != nil {
 		return err
 	}
-	if gvk != sw.client.duckGVK {
+
+	rawGVK, found := sw.client.typeMap[gvk]
+	if !found {
 		return sw.client.c.Status().Create(ctx, obj, subResource, opts...)
 	}
-	return fmt.Errorf("create not supported for duck type %+v", sw.client.duckGVK)
+
+	ll, err := sw.client.Scheme().New(rawGVK)
+	if err != nil {
+		return err
+	}
+	llo := ll.(client.Object)
+	err = sw.client.Scheme().Convert(obj, llo, nil)
+	if err != nil {
+		return err
+	}
+	return sw.client.c.Status().Create(ctx, llo, subResource, opts...)
 }
 
 func (sw *typedStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
@@ -244,10 +289,22 @@ func (sw *typedStatusWriter) Update(ctx context.Context, obj client.Object, opts
 	if err != nil {
 		return err
 	}
-	if gvk != sw.client.duckGVK {
+
+	rawGVK, found := sw.client.typeMap[gvk]
+	if !found {
 		return sw.client.c.Status().Update(ctx, obj, opts...)
 	}
-	return fmt.Errorf("update not supported for duck type %+v", sw.client.duckGVK)
+
+	ll, err := sw.client.Scheme().New(rawGVK)
+	if err != nil {
+		return err
+	}
+	llo := ll.(client.Object)
+	err = sw.client.Scheme().Convert(obj, llo, nil)
+	if err != nil {
+		return err
+	}
+	return sw.client.c.Status().Update(ctx, llo, opts...)
 }
 
 func (sw *typedStatusWriter) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
@@ -255,11 +312,13 @@ func (sw *typedStatusWriter) Patch(ctx context.Context, obj client.Object, patch
 	if err != nil {
 		return err
 	}
-	if gvk != sw.client.duckGVK {
+
+	rawGVK, found := sw.client.typeMap[gvk]
+	if !found {
 		return sw.client.c.Status().Patch(ctx, obj, patch, opts...)
 	}
 
-	ll, err := sw.client.c.Scheme().New(sw.client.rawGVK)
+	ll, err := sw.client.c.Scheme().New(rawGVK)
 	if err != nil {
 		return err
 	}
@@ -272,4 +331,102 @@ func (sw *typedStatusWriter) Patch(ctx context.Context, obj client.Object, patch
 
 func (d *typedClient) SubResource(subResource string) client.SubResourceClient {
 	return d.c.SubResource(subResource)
+}
+
+func (d *typedClient) GVK(gvk schema.GroupVersionKind) (bool, error) {
+	rawGVK, found := d.typeMap[gvk]
+	if !found {
+		return d.cachable.GVK(gvk)
+	}
+	return d.cachable.GVK(rawGVK)
+}
+
+func (d *typedClient) GVR(gvr schema.GroupVersionResource) (bool, error) {
+	gvk, err := d.c.RESTMapper().KindFor(schema.GroupVersionResource{
+		Group:    gvr.Group,
+		Version:  "",
+		Resource: gvr.Resource,
+	})
+	if err != nil {
+		return false, err
+	}
+	return d.GVK(gvk)
+}
+
+func NewClient(config *restclient.Config, options client.Options) (client.Client, error) {
+	tm := map[schema.GroupVersionKind]schema.GroupVersionKind{
+		discoveryv1.SchemeGroupVersion.WithKind("EndpointSlice"): discoveryv1beta1.SchemeGroupVersion.WithKind("EndpointSlice"),
+	}
+	c, err := client.New(config, options)
+	if err != nil {
+		return nil, err
+	}
+	cachable, err := apiutil2.NewDynamicCachable(config)
+	if err != nil {
+		return nil, err
+	}
+	tc := &typedClient{
+		c:        c,
+		cachable: cachable,
+		readerWrapper: &readerWrapper{
+			c:       c,
+			scheme:  c.Scheme(),
+			typeMap: tm,
+		},
+		typeMap: tm,
+	}
+
+	co := cu.NewDelegatingClientInput{
+		// CacheReader:       options.Cache.Reader,
+		Client: tc,
+		// UncachedObjects:   options.Cache.DisableFor,
+		// CacheUnstructured: options.Cache.Unstructured, // cache unstructured objects
+		Cachable: tc,
+	}
+	if options.Cache != nil {
+		co.CacheReader = &readerWrapper{
+			c:       options.Cache.Reader,
+			scheme:  c.Scheme(),
+			typeMap: tm,
+		}
+		co.UncachedObjects = options.Cache.DisableFor
+		co.CacheUnstructured = options.Cache.Unstructured // cache unstructured objects
+	}
+	return cu.NewDelegatingClient(co)
+}
+
+func NewOldClient(cache cache.Cache, config *restclient.Config, options client.Options, uncachedObjects ...client.Object) (client.Client, error) {
+	tm := map[schema.GroupVersionKind]schema.GroupVersionKind{
+		discoveryv1.SchemeGroupVersion.WithKind("EndpointSlice"): discoveryv1beta1.SchemeGroupVersion.WithKind("EndpointSlice"),
+	}
+	c, err := client.New(config, options)
+	if err != nil {
+		return nil, err
+	}
+	cachable, err := apiutil2.NewDynamicCachable(config)
+	if err != nil {
+		return nil, err
+	}
+	tc := &typedClient{
+		c:        c,
+		cachable: cachable,
+		readerWrapper: &readerWrapper{
+			c:       c,
+			scheme:  c.Scheme(),
+			typeMap: tm,
+		},
+		typeMap: tm,
+	}
+
+	return cu.NewDelegatingClient(cu.NewDelegatingClientInput{
+		CacheReader: &readerWrapper{
+			c:       cache,
+			scheme:  c.Scheme(),
+			typeMap: tm,
+		},
+		Client:            tc,
+		UncachedObjects:   uncachedObjects,
+		CacheUnstructured: true, // cache unstructured objects
+		Cachable:          cachable,
+	})
 }

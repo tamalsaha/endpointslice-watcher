@@ -14,16 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package duck
-
-import (
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-)
-
-type Reconciler interface {
-	reconcile.Reconciler
-	InjectClient(client.Client) error
-}
-
-type ReconcilerBuilder func() Reconciler
+// +k8s:deepcopy-gen=package
+// +k8s:openapi-gen=true
+// +gencrdrefdocs:force=true
+package v1 // import "kmodules.xyz/client-go/api/v1"

@@ -18,6 +18,7 @@ package main
 
 import (
 	"flag"
+	"github.com/tamalsaha/endpointslice-watcher/lib"
 	"os"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
@@ -83,6 +84,7 @@ func main() {
 		// if you are doing or is intended to do any operation such as perform cleanups
 		// after the manager stops then its usage might be unsafe.
 		// LeaderElectionReleaseOnCancel: true,
+		NewClient: lib.NewClient,
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
